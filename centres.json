@@ -1,0 +1,233 @@
+[
+ {
+  "name": "Frizlands Lane Reuse and Recycling Centre",
+  "borough": "Barking and Dagenham",
+  "postcode": null,
+  "lat": 51.55856,
+  "lon": 0.15671
+ },
+ {
+  "name": "Summers Lane Civic Amenity and Recycling Centre",
+  "borough": "Barnet",
+  "postcode": "N12 0RF",
+  "lat": 51.60659,
+  "lon": -0.16201
+ },
+ {
+  "name": "Foots Cray Reuse and Recycling Centre",
+  "borough": "Bexley",
+  "postcode": "DA14 5HS",
+  "lat": 51.41628,
+  "lon": 0.12176
+ },
+ {
+  "name": "Abbey Road Reuse and Recycling Centre",
+  "borough": "Brent",
+  "postcode": "NW10 7TJ",
+  "lat": 51.53693,
+  "lon": -0.278499
+ },
+ {
+  "name": "Churchfields Road Reuse and Recycling Centre",
+  "borough": "Bromley",
+  "postcode": "BR3 4QY",
+  "lat": 51.40429,
+  "lon": -0.04689
+ },
+ {
+  "name": "Waldo Road Reuse & Recycling Centre",
+  "borough": "Bromley",
+  "postcode": "BR1 2QX",
+  "lat": 51.39917,
+  "lon": 0.03518
+ },
+ {
+  "name": "Regis Road Recycling Centre",
+  "borough": "Camden",
+  "postcode": null,
+  "lat": 51.5508,
+  "lon": -0.14487
+ },
+ {
+  "name": "Factory Lane Reuse and Recycling Centre",
+  "borough": "Croydon",
+  "postcode": "CR0 3RL",
+  "lat": 51.377742,
+  "lon": -0.11259
+ },
+ {
+  "name": "Fishers Farm Reuse and Recycling Centre",
+  "borough": "Croydon",
+  "postcode": "CR0 0EY",
+  "lat": 51.339298,
+  "lon": -0.00614
+ },
+ {
+  "name": "Purley Oaks Household Reuse & Recycling Centre",
+  "borough": "Croydon",
+  "postcode": null,
+  "lat": 51.34532,
+  "lon": -0.10349
+ },
+ {
+  "name": "Greenford Re-use and Recycling Centre",
+  "borough": "Ealing",
+  "postcode": "UB6 9AP",
+  "lat": 51.52367,
+  "lon": -0.35067
+ },
+ {
+  "name": "Barrowell Green Recycling Centre",
+  "borough": "Enfield",
+  "postcode": null,
+  "lat": 51.62684,
+  "lon": -0.09327
+ },
+ {
+  "name": "Carterhatch Lane Reuse and Recycling Centre",
+  "borough": "Enfield",
+  "postcode": "EN1 4JY",
+  "lat": 51.66125,
+  "lon": -0.056731
+ },
+ {
+  "name": "Greenwich Reuse and Recycling Centre",
+  "borough": "Greenwich",
+  "postcode": "SE28 0FP",
+  "lat": 51.49668,
+  "lon": 0.10644
+ },
+ {
+  "name": "Western Road Reuse and Recycling Centre",
+  "borough": "Haringey",
+  "postcode": "N22 6XJ",
+  "lat": 51.59468,
+  "lon": -0.11629
+ },
+ {
+  "name": "Forward Drive Recycling Centre",
+  "borough": "Harrow",
+  "postcode": "HA3 8NT",
+  "lat": 51.590485,
+  "lon": -0.3268
+ },
+ {
+  "name": "Gerpins Lane Reuse and Recycling Centre",
+  "borough": "Havering",
+  "postcode": null,
+  "lat": 51.53615,
+  "lon": 0.23878
+ },
+ {
+  "name": "New Years Green Lane Civic Amenity Site",
+  "borough": "Hillingdon",
+  "postcode": "UB9 6LX",
+  "lat": 51.58356,
+  "lon": -0.46971
+ },
+ {
+  "name": "Space Waye Reuse and Recycling Centre",
+  "borough": "Hounslow",
+  "postcode": "TW14 0TH",
+  "lat": 51.46358,
+  "lon": -0.40992
+ },
+ {
+  "name": "Hornsey Street Reuse and Recycling Centre",
+  "borough": "Islington",
+  "postcode": "N7 8HU",
+  "lat": 51.54974,
+  "lon": -0.11646
+ },
+ {
+  "name": "Villiers Road Household Reuse and Recycling Centre",
+  "borough": "Kingston upon Thames",
+  "postcode": "KT1 3GZ",
+  "lat": 51.40299,
+  "lon": -0.29023
+ },
+ {
+  "name": "Vale Street Reuse and Recycling Centre",
+  "borough": "Lambeth",
+  "postcode": "SE27 9PH",
+  "lat": 51.428883,
+  "lon": -0.095852
+ },
+ {
+  "name": "Landmann Way Reuse and Recycling Centre",
+  "borough": "Lewisham",
+  "postcode": "SE14 5RS",
+  "lat": 51.48462,
+  "lon": -0.045555
+ },
+ {
+  "name": "Garth Road Recycling and Reuse Centre",
+  "borough": "Merton",
+  "postcode": "SM4 4AX",
+  "lat": 51.38504,
+  "lon": -0.22794
+ },
+ {
+  "name": "Jenkins Lane Reuse and Recycling Centre",
+  "borough": "Newham",
+  "postcode": "IG11 0AD",
+  "lat": 51.52435,
+  "lon": 0.07696
+ },
+ {
+  "name": "Chigwell Road Reuse and Recycling Centre",
+  "borough": "Redbridge",
+  "postcode": "IG8 8PP",
+  "lat": 51.59841,
+  "lon": 0.04245
+ },
+ {
+  "name": "Townmead Road Re-Use and Recycling Centre",
+  "borough": "Richmond upon Thames",
+  "postcode": "TW9 4EL",
+  "lat": 51.47513,
+  "lon": -0.27535
+ },
+ {
+  "name": "Southwark Reuse and Recycling Centre",
+  "borough": "Southwark",
+  "postcode": "SE15 1AL",
+  "lat": 51.48282,
+  "lon": -0.05767
+ },
+ {
+  "name": "Kimpton Park Way Reuse and Recycling Centre",
+  "borough": "Sutton",
+  "postcode": "SM3 9QH",
+  "lat": 51.378967,
+  "lon": -0.21195
+ },
+ {
+  "name": "Tower Hamlets Reuse and Recycling Centre",
+  "borough": "Tower Hamlets",
+  "postcode": "E14 9RG",
+  "lat": 51.50497,
+  "lon": -0.00594
+ },
+ {
+  "name": "Kings Road Reuse and Recycling Centre",
+  "borough": "Waltham Forest",
+  "postcode": null,
+  "lat": 51.62693,
+  "lon": 0.0045
+ },
+ {
+  "name": "South Access Road Household Reuse and Recycling Centre",
+  "borough": "Waltham Forest",
+  "postcode": "E17 8AX",
+  "lat": 51.57325,
+  "lon": -0.0377
+ },
+ {
+  "name": "Smugglers Way Household Recycling & Waste Centre",
+  "borough": "Wandsworth",
+  "postcode": "SW18 1JS",
+  "lat": 51.4625,
+  "lon": -0.19125
+ }
+]

@@ -1,156 +1,286 @@
-"""Tests for your app. Run them with `pytest`.
+"""Tests for London Recycling. The build runs these on every push.
 
-Keep these. Publishing runs them, and a repository whose tests fail does not
-deploy — which is the fastest feedback you will get all day, because the
-alternative is finding out from a user that your app answers wrongly.
-
-`LocalRunner` is the same code the production runtime uses to call your app.
-So a call that works here works deployed, and — more usefully — a `Result`
-that violates your manifest fails here exactly as it would in production.
-That is the whole reason to test through the runner rather than calling
-`App().handle(...)` directly.
+The network is blocked during tests (conftest.py), so every test replaces the
+one method that does HTTP, `App._fetch`, with a stub that returns payloads
+shaped like the real ones from postcodes.io and Nominatim (captured November
+2026).
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
 from pippa_agentapp_sdk import LocalRunner, OutputShapeViolation
 
-from app import App, CannotReadDate
+import app as app_module
+from app import App, NoLocation, NotInLondon, PlaceNotFound
 
-# A fixed "now", so a test that passes today still passes next March.
-# 21:00 UTC on purpose: it is already the next day in New Zealand, which is
-# what makes the time zone test below mean anything. At 09:00 UTC it is still
-# the same day everywhere that matters, and the test would pass whether or not
-# the code handled time zones at all.
-NOW = datetime(2026, 10, 22, 21, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 16, 12, 0, tzinfo=timezone.utc)
+
+# ── Payloads shaped like the real APIs ──────────────────────────────────────
+
+POSTCODE_SE15 = {
+    "status": 200,
+    "result": {
+        "postcode": "SE15 1AL", "latitude": 51.4795, "longitude": -0.0640,
+        "admin_district": "Southwark", "region": "London", "country": "England",
+    },
+}
+POSTCODE_MANCHESTER = {
+    "status": 200,
+    "result": {
+        "postcode": "M1 1AE", "latitude": 53.4794, "longitude": -2.2453,
+        "admin_district": "Manchester", "region": "North West", "country": "England",
+    },
+}
+OUTCODE_E8 = {
+    "status": 200,
+    "result": {
+        "outcode": "E8", "latitude": 51.54379, "longitude": -0.06611,
+        "admin_district": ["Hackney", "Islington", "Tower Hamlets"],
+    },
+}
+NOMINATIM_CLAPHAM = [{
+    "lat": "51.4614469", "lon": "-0.1386270", "name": "Clapham",
+    "address": {
+        "suburb": "Clapham", "city_district": "London Borough of Lambeth",
+        "city": "Greater London", "postcode": "SW4 7AJ", "country_code": "gb",
+    },
+}]
+NOMINATIM_KENT = [{
+    "lat": "51.2844947", "lon": "0.3333032", "name": "Narnia",
+    "address": {"county": "Kent", "state": "England", "country_code": "gb"},
+}]
+REVERSE_LAMBETH = {"status": 200, "result": [{"postcode": "SW4 7AJ", "admin_district": "Lambeth"}]}
 
 
-def call(inputs: dict, outcome: str = "days.until", *, explicit: bool = False):
-    """Run one outcome the way the runtime does, and return the Result.
+def stub(routes: dict):
+    """A fake `_fetch` answering by the first route whose key is in the URL.
 
-    `granted_secrets` is required even though a hackathon app never has any —
-    the runner takes it on every call, so an empty dict is how you say "none".
-
-    `explicit=True` calls the app the way Pippa does when the person picked
-    it by name (`@Days Until ...`) instead of Pippa choosing it. The app sees
-    it as `call.context.explicit`.
+    A value that is an exception is raised; anything else is returned as JSON.
     """
-    return LocalRunner(App()).call(
-        outcome, inputs, granted_secrets={}, now=NOW, request_id="test-1",
+    def fetch(url, timeout=6.0):
+        for fragment, answer in routes.items():
+            if fragment in url:
+                if isinstance(answer, BaseException):
+                    raise answer
+                return json.dumps(answer).encode()
+        raise AssertionError(f"unexpected request: {url}")
+    return fetch
+
+
+def run(outcome: str, inputs: dict, routes: dict, *, explicit: bool = False):
+    instance = App()
+    instance._fetch = stub(routes)
+    return LocalRunner(instance).call(
+        outcome, inputs, granted_secrets={}, now=NOW, request_id="t1",
         explicit=explicit,
     ).result
 
 
+def http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example.com", code, "error", {}, None)
+
+
+# ── The manifest and the data files ─────────────────────────────────────────
+
+
 def test_the_manifest_is_valid():
-    """The first thing to break, and the easiest to miss.
-
-    `App()` validates manifest.yaml as it is constructed, so this fails the
-    moment the manifest is malformed — before anything else has a chance to
-    produce a more confusing error.
-    """
-    app = App()
-    assert app.manifest.app_id.startswith("hack.")
-    assert [o.id for o in app.manifest.outcomes] == ["days.until"]
+    instance = App()
+    assert instance.manifest.app_id == "hack.carl_public"
+    assert [o.id for o in instance.manifest.outcomes] == [
+        "recycling.nearest_centre", "recycling.collection_day",
+    ]
 
 
-def test_it_counts_the_days():
-    result = call({"date": "2026-12-25"})
-    assert result.data["days"] == 64
-    assert result.data["target_date"] == "2026-12-25"
-    assert result.data["weekday"] == "Friday"
-    assert result.data["already_passed"] is False
+def test_every_centre_is_in_a_known_borough():
+    assert len(app_module.CENTRES) >= 30
+    for centre in app_module.CENTRES:
+        assert centre["borough"] in app_module.COUNCILS, centre["name"]
+        assert 51.2 < centre["lat"] < 51.8 and -0.6 < centre["lon"] < 0.4, centre["name"]
 
 
-def test_a_date_written_in_words_works():
-    result = call({"date": "25 December"})
-    assert result.data["target_date"] == "2026-12-25"
+def test_there_is_a_council_link_for_all_33_authorities():
+    assert len(app_module.COUNCILS) == 33
+    assert all(url.startswith("https://") for url in app_module.COUNCILS.values())
 
 
-def test_a_date_already_gone_rolls_to_next_year():
-    """`1 January` asked in October means the January that is coming."""
-    result = call({"date": "1 January"})
-    assert result.data["target_date"] == "2027-01-01"
-    assert result.data["already_passed"] is False
+# ── Nearest centre ──────────────────────────────────────────────────────────
 
 
-def test_the_users_timezone_decides_what_today_is():
-    """21:00 UTC is already tomorrow in Auckland.
-
-    Worth a test of its own: it is the bug every date app has, it only shows
-    up for users in some parts of the world, and it is invisible if you only
-    ever test from one place.
-    """
-    here = call({"date": "2026-10-23"}).data["days"]
-    there = call({"date": "2026-10-23", "timezone": "Pacific/Auckland"}).data["days"]
-    assert here == 1    # still the 22nd in UTC
-    assert there == 0   # already the 23rd in Auckland
+def test_a_full_postcode_finds_the_centre_on_its_doorstep():
+    result = run("recycling.nearest_centre", {"location": "se15 1al"},
+                 {"postcodes.io/postcodes/SE151AL": POSTCODE_SE15})
+    assert result.data["centre_name"] == "Southwark Reuse and Recycling Centre"
+    assert result.data["centre_borough"] == "Southwark"
+    assert result.data["distance_km"] < 1
+    assert result.data["location_used"] == "SE15 1AL"
+    assert len(result.data["other_nearby"]) == 2
+    assert "openstreetmap.org" in result.data["map_link"]
 
 
-def test_a_made_up_timezone_never_reaches_the_app():
-    """The platform checks declared types before your code runs.
-
-    `type: timezone` in the manifest means the runtime validates it. So your
-    app does not need to — and should not, because a hand-rolled check here
-    would be dead code that looks load-bearing.
-    """
-    from pippa_agentapp_sdk import InputShapeViolation
-
-    with pytest.raises(InputShapeViolation):
-        call({"date": "2026-12-25", "timezone": "Mars/Olympus"})
+def test_a_place_name_is_geocoded():
+    result = run("recycling.nearest_centre", {"location": "Clapham"},
+                 {"nominatim.openstreetmap.org/search": NOMINATIM_CLAPHAM})
+    assert result.data["location_used"] == "Clapham"
+    assert result.data["distance_km"] < 6
+    assert "Clapham" in result.narrative
 
 
-def test_no_date_is_an_error_a_user_can_read():
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""})
-    # `user_message` is the only part a user may be shown, so it is the part
-    # worth asserting on. The rest stays in the logs.
-    assert failure.value.user_message == "I could not work out which date you meant."
+def test_a_postcode_district_works():
+    result = run("recycling.nearest_centre", {"location": "E8"},
+                 {"postcodes.io/outcodes/E8": OUTCODE_E8})
+    assert result.data["location_used"] == "E8"
+    assert result.data["distance_km"] < 8
 
 
-def test_nonsense_is_refused_rather_than_guessed():
-    with pytest.raises(CannotReadDate):
-        call({"date": "a week on Thursday-ish"})
+def test_no_location_says_what_to_type():
+    with pytest.raises(NoLocation) as failure:
+        run("recycling.nearest_centre", {"location": ""}, {})
+    assert "postcode" in failure.value.user_message
+
+
+def test_a_missing_location_input_is_the_same_as_blank():
+    with pytest.raises(NoLocation):
+        run("recycling.nearest_centre", {}, {})
+
+
+def test_a_postcode_outside_london_is_refused_clearly():
+    with pytest.raises(NotInLondon) as failure:
+        run("recycling.nearest_centre", {"location": "M1 1AE"},
+            {"postcodes.io/postcodes/M11AE": POSTCODE_MANCHESTER})
+    assert "outside Greater London" in failure.value.user_message
+
+
+def test_a_place_found_outside_london_is_refused():
+    with pytest.raises(NotInLondon):
+        run("recycling.nearest_centre", {"location": "Narnia"},
+            {"nominatim.openstreetmap.org/search": NOMINATIM_KENT})
+
+
+def test_a_town_elsewhere_is_not_mistaken_for_a_london_road():
+    """'Brighton' must not become Brighton Road in Croydon."""
+    brighton = [
+        {"lat": "50.82", "lon": "-0.14", "name": "Brighton", "category": "place",
+         "address": {"city": "Brighton", "county": "Brighton and Hove"}},
+        {"lat": "51.34", "lon": "-0.11", "name": "Brighton Road", "category": "highway",
+         "address": {"city": "Greater London", "city_district": "London Borough of Croydon"}},
+    ]
+    with pytest.raises(NotInLondon):
+        run("recycling.nearest_centre", {"location": "Brighton"},
+            {"nominatim.openstreetmap.org/search": brighton})
+
+
+def test_westminster_counts_as_london():
+    """Nominatim names the City of Westminster for itself, not Greater London."""
+    westminster = [{"lat": "51.4973", "lon": "-0.1372", "name": "Westminster",
+                    "category": "place", "address": {"city": "City of Westminster"}}]
+    result = run("recycling.collection_day", {"location": "Westminster"},
+                 {"nominatim.openstreetmap.org/search": westminster})
+    assert result.data["borough"] == "Westminster"
+
+
+def test_an_unknown_place_is_named_back_not_crashed_on():
+    """Nominatim answers 200 with [] for a place it does not know."""
+    with pytest.raises(PlaceNotFound) as failure:
+        run("recycling.nearest_centre", {"location": "Atlantis"},
+            {"nominatim.openstreetmap.org/search": []})
+    assert "Atlantis" in failure.value.user_message
+
+
+def test_an_unknown_postcode_is_named_back():
+    """postcodes.io answers 404 for a postcode that does not exist."""
+    with pytest.raises(PlaceNotFound) as failure:
+        run("recycling.nearest_centre", {"location": "ZZ99 9ZZ"},
+            {"postcodes.io/postcodes/ZZ999ZZ": http_error(404)})
+    assert "ZZ99 9ZZ" in failure.value.user_message
+
+
+def test_a_rate_limit_is_retryable():
+    from pippa_agentapp_sdk import RateLimitedError
+
+    with pytest.raises(RateLimitedError) as failure:
+        run("recycling.nearest_centre", {"location": "Clapham"},
+            {"nominatim.openstreetmap.org/search": http_error(429)})
+    assert failure.value.retryable is True
+
+
+def test_a_timeout_is_caught():
+    from pippa_agentapp_sdk import ServiceUnavailableError
+
+    with pytest.raises(ServiceUnavailableError):
+        run("recycling.nearest_centre", {"location": "SE15 1AL"},
+            {"postcodes.io": TimeoutError("timed out")})
+
+
+def test_a_server_error_is_service_unavailable():
+    from pippa_agentapp_sdk import ServiceUnavailableError
+
+    with pytest.raises(ServiceUnavailableError):
+        run("recycling.nearest_centre", {"location": "SE15 1AL"},
+            {"postcodes.io": http_error(503)})
+
+
+# ── Collection day ──────────────────────────────────────────────────────────
+
+
+def test_a_postcode_gives_its_council_and_the_bin_day_finder():
+    result = run("recycling.collection_day", {"location": "SE15 1AL"},
+                 {"postcodes.io/postcodes/SE151AL": POSTCODE_SE15})
+    assert result.data["borough"] == "Southwark"
+    assert result.data["council_website"].startswith("https://www.southwark.gov.uk")
+    assert result.data["bin_day_finder"] == "https://www.gov.uk/rubbish-collection-day"
+    assert result.data["other_possible_boroughs"] == []
+
+
+def test_a_district_spanning_boroughs_says_so():
+    result = run("recycling.collection_day", {"location": "e8"},
+                 {"postcodes.io/outcodes/E8": OUTCODE_E8})
+    assert result.data["borough"] == "Hackney"
+    assert result.data["other_possible_boroughs"] == ["Islington", "Tower Hamlets"]
+    assert "full postcode" in result.narrative
+
+
+def test_a_place_name_gives_the_borough_from_nominatim():
+    result = run("recycling.collection_day", {"location": "Clapham"},
+                 {"nominatim.openstreetmap.org/search": NOMINATIM_CLAPHAM})
+    assert result.data["borough"] == "Lambeth"
+
+
+def test_a_place_without_a_borough_falls_back_to_reverse_lookup():
+    no_district = [dict(NOMINATIM_CLAPHAM[0], address={"city": "Greater London"})]
+    result = run("recycling.collection_day", {"location": "Clapham"}, {
+        "nominatim.openstreetmap.org/search": no_district,
+        "postcodes.io/postcodes?": REVERSE_LAMBETH,
+    })
+    assert result.data["borough"] == "Lambeth"
+
+
+def test_borough_names_are_tidied():
+    assert app_module._tidy_borough("Royal Borough of Kensington and Chelsea") == "Kensington and Chelsea"
+    assert app_module._tidy_borough("London Borough of Richmond upon Thames") == "Richmond upon Thames"
+    assert app_module._tidy_borough("City of Westminster") == "Westminster"
+    assert app_module._tidy_borough("City of London") == "City of London"
+
+
+# ── Picked with @ ───────────────────────────────────────────────────────────
 
 
 def test_picked_by_name_it_answers_and_refuses_as_usual():
-    """`@Days Until ...` in the chat: the person picked this app themselves.
+    routes = {"postcodes.io/postcodes/SE151AL": POSTCODE_SE15}
+    picked = run("recycling.nearest_centre", {"location": "SE15 1AL"}, routes, explicit=True)
+    assert picked.data == run("recycling.nearest_centre", {"location": "SE15 1AL"}, routes).data
 
-    Then nothing checks whether the message suits the app. It is called
-    whatever the words, and `call.context.explicit` is True. The right
-    response is the ordinary one: answer what you can, and refuse only for a
-    missing or unreadable input, with a sentence that says what was wrong.
-    Never refuse because the message does not look like your example phrases
-    — the person has already told you it is for you.
-
-    This app never reads the flag, because it never needed to: it already
-    refuses only for a missing or unreadable date. If yours does, read it as
-    `getattr(call.context, "explicit", False)`. An app published before the
-    platform update that added the flag runs on an SDK that does not have
-    it, until you publish it again.
-    """
-    picked = call({"date": "2026-12-25"}, explicit=True)
-    assert picked.data == call({"date": "2026-12-25"}).data
-
-    with pytest.raises(CannotReadDate) as failure:
-        call({"date": ""}, explicit=True)
-    assert failure.value.user_message == "I could not work out which date you meant."
+    with pytest.raises(NoLocation):
+        run("recycling.collection_day", {"location": ""}, {}, explicit=True)
 
 
 def test_the_runner_enforces_the_manifest(monkeypatch):
-    """Proof that the contract is real, and the reason to test through it.
-
-    An app returning a field it did not declare is refused. You will meet this
-    error if you add something to `data` and forget to add it to `output` in
-    manifest.yaml — which is the single most common way a first app fails
-    after it deploys.
-    """
     from pippa_agentapp_sdk import Result
 
-    monkeypatch.setattr(
-        App, "handle", lambda self, c: Result(data={"surprise": "hello"})
-    )
+    monkeypatch.setattr(App, "handle", lambda self, c: Result(data={"surprise": "hello"}))
     with pytest.raises(OutputShapeViolation):
-        call({"date": "2026-12-25"})
+        run("recycling.nearest_centre", {"location": "SE15 1AL"}, {})

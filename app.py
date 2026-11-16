@@ -1,67 +1,102 @@
-"""Your app. Replace this with whatever you are building.
+"""London Recycling: the nearest reuse and recycling centre, and who collects
+your recycling, for anywhere in Greater London.
 
-The shape never changes, whatever your app does:
+Two outcomes:
 
-    class App:
-        manifest  -> the parsed manifest.yaml sitting next to this file
-        handle(call) -> Result
+* ``recycling.nearest_centre`` — the closest household reuse and recycling
+  centres ("the tip") to a London postcode or place, with distances.
+* ``recycling.collection_day`` — which borough council collects recycling at
+  that address, and where to look up the exact collection day.
 
-`handle` is called once per request and must return a `Result` whose `data`
-matches the `output` your manifest declares for that outcome — exactly: every
-declared field present, nothing extra, right types. The runtime checks it and
-refuses anything that does not match, which is deliberate. An app that can
-return surprise fields is an app Pippa cannot describe to a user before they
-install it.
+Locations are resolved with two free, keyless services:
 
-Three things worth knowing before you start:
+* postcodes.io for UK postcodes (full ones like "E8 1EA" or districts like
+  "E8"), and for turning coordinates back into a borough;
+* Nominatim (OpenStreetMap) for place names like "Clapham" or "Brixton".
 
-**You get the inputs, and nothing about who asked.** No user id, no account,
-no conversation. `call.inputs` is what Pippa extracted from the message;
-besides it, `call.context` carries only the time, an id for your logs, and
-whether the person picked your app by name. This is on purpose: your app
-cannot leak what it was never given.
+The list of centres (``centres.json``) and the council links
+(``councils.json``) are data files shipped beside this module, so finding the
+nearest centre is arithmetic, not another network call.
 
-**You keep nothing.** A fresh copy of this class is built for every call and
-thrown away afterwards. Writing to a file or a global will appear to work and
-then silently stop, because the next call may be on a different machine.
-
-**Errors are part of the design.** Raise `AgentAppError` with a `user_message`
-when you cannot answer. That message is the one a user may see; everything
-else — the exception type, the traceback — stays in the logs.
+There is no public, London-wide API for collection days: every council runs
+its own address lookup. So the collection outcome says which council it is and
+links to that council's page and to GOV.UK's official bin-day finder, rather
+than inventing a day.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import json
+import math
+import re
+import urllib.error
+import urllib.request
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from urllib.parse import quote, urlencode
 
 from pippa_agentapp_sdk import (
     AgentAppError,
     Call,
     Manifest,
+    RateLimitedError,
     Result,
+    ServiceUnavailableError,
     load_manifest_file,
     validate_manifest,
 )
 
-MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
+HERE = Path(__file__).resolve().parent
+MANIFEST_PATH = HERE / "manifest.yaml"
+CENTRES = json.loads((HERE / "centres.json").read_text("utf-8"))
+COUNCILS: dict[str, str] = json.loads((HERE / "councils.json").read_text("utf-8"))
+
+#: Nominatim answers 403 to a request without a descriptive User-Agent.
+USER_AGENT = (
+    "pippa-agent-app-london-recycling/0.1 "
+    "(https://github.com/Pippa-Labs/pippa-hack-carl-public)"
+)
+
+#: GOV.UK's official "find your bin collection day" service. It takes a
+#: postcode and sends the person to the right council's own lookup.
+GOV_UK_BIN_DAY = "https://www.gov.uk/rubbish-collection-day"
+
+#: A full UK postcode ("SW1A 1AA", "e81ea") or just its district ("E8", "SW11").
+FULL_POSTCODE = re.compile(r"^[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}$")
+OUTCODE = re.compile(r"^[A-Z]{1,2}[0-9][A-Z0-9]?$")
+
+#: Rough box around Greater London, for steering Nominatim. The answer is
+#: still checked afterwards, because a bounded search can land just outside.
+LONDON_VIEWBOX = "-0.52,51.70,0.34,51.28"
+
+HOW_MANY_NEARBY = 3
 
 
-class CannotReadDate(AgentAppError):
-    """Raised when the message did not contain a date we can work with."""
+# ── Errors about this app's own subject ─────────────────────────────────────
 
-    # What a user may be shown. Write it as a sentence, not an error code.
-    user_message = "I could not work out which date you meant."
+
+class NoLocation(AgentAppError):
+    user_message = (
+        "Tell me a London postcode or area, for example "
+        "\"E8 1EA\" or \"Clapham\", and I will find the nearest recycling centre."
+    )
     retryable = False
 
 
-class App:
-    """A small, complete example: count the days until a date."""
+class PlaceNotFound(AgentAppError):
+    user_message = "I could not find that place in London."
+    retryable = False
 
+
+class NotInLondon(AgentAppError):
+    user_message = "That is outside Greater London, and I only cover the London boroughs."
+    retryable = False
+
+
+# ── The app ─────────────────────────────────────────────────────────────────
+
+
+class App:
     def __init__(self) -> None:
-        # Validated at construction, so an app whose manifest is wrong fails
-        # immediately and loudly rather than on some later call.
         self._manifest = validate_manifest(load_manifest_file(MANIFEST_PATH))
 
     @property
@@ -69,110 +104,250 @@ class App:
         return self._manifest
 
     def handle(self, call: Call) -> Result:
-        """One request in, one Result out.
+        where = (call.inputs.get("location") or "").strip()
+        if not where:
+            raise NoLocation("no location in the message")
 
-        `call.outcome_id` says which of your manifest's outcomes was asked
-        for. With one outcome you can ignore it; with several, branch on it.
-        """
-        if call.outcome_id != "days.until":
-            raise AgentAppError(f"this app cannot do {call.outcome_id!r}")
+        if call.outcome_id == "recycling.nearest_centre":
+            return self._nearest_centre(where)
+        if call.outcome_id == "recycling.collection_day":
+            return self._collection_day(where)
+        raise AgentAppError(f"this app cannot do {call.outcome_id!r}")
 
-        text = (call.inputs.get("date") or "").strip()
-        if not text:
-            # The manifest tells the extractor to send an empty string rather
-            # than guess, so this is the ordinary "they did not say" path.
-            #
-            # A missing or unreadable date (here, and in `_parse` below) is
-            # the only thing this app refuses for, which is why it never reads
-            # `call.context.explicit`, True when the person picked the app
-            # with @. That refusal is right whoever chose the app; the test
-            # that says so is in test_app.py.
-            raise CannotReadDate("no date in the message")
+    # ── Outcomes ────────────────────────────────────────────────────────────
 
-        # `call.context.now` is the current time, supplied by the runtime
-        # rather than read from the clock. That is what makes an app testable:
-        # a test can say what "now" is.
-        today = self._today(call)
-        target = self._parse(text, today)
-        difference = (target - today).days
-
-        return Result(
-            data={
-                "days": abs(difference),
-                "target_date": target.isoformat(),
-                "weekday": target.strftime("%A"),
-                "already_passed": difference < 0,
-            },
-            # Optional. One plain sentence Pippa may use when it writes its
-            # reply. Say what you found, not what you did.
-            narrative=self._sentence(target, difference),
+    def _nearest_centre(self, where: str) -> Result:
+        spot = self._locate(where, need_borough=False)
+        ranked = sorted(
+            CENTRES,
+            key=lambda c: _km(spot["lat"], spot["lon"], c["lat"], c["lon"]),
         )
+        nearest = ranked[0]
+        distance = round(_km(spot["lat"], spot["lon"], nearest["lat"], nearest["lon"]), 1)
 
-    @staticmethod
-    def _today(call: Call) -> date:
-        """The user's today, not the server's.
+        others = []
+        for centre in ranked[1:HOW_MANY_NEARBY]:
+            km = _km(spot["lat"], spot["lon"], centre["lat"], centre["lon"])
+            others.append(f"{centre['name']} ({centre['borough']}), {km:.1f} km")
 
-        A server in UTC and a user in Auckland disagree about what day it is
-        for twelve hours out of every twenty-four, and "how many days until"
-        is exactly the question that notices.
-        """
-        # No try/except around ZoneInfo, and that is the point: the manifest
-        # declares this input as `type: timezone`, so the runtime has already
-        # rejected anything that is not a real IANA zone before your code
-        # runs. Declaring the right type is cheaper than validating by hand,
-        # and the user gets a better error.
-        zone = call.inputs.get("timezone")
-        moment: datetime = call.context.now
-        if zone:
-            moment = moment.astimezone(ZoneInfo(zone))
-        return moment.date()
-
-    @staticmethod
-    def _parse(text: str, today: date) -> date:
-        """Turn what the user wrote into a date.
-
-        Deliberately small — real date parsing is its own project. Handles
-        `YYYY-MM-DD`, `25 December`, `December 25` and a bare day number.
-        """
-        cleaned = text.replace(",", " ").strip()
-
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
-            try:
-                return datetime.strptime(cleaned, fmt).date()
-            except ValueError:
-                continue
-
-        for fmt in ("%d %B", "%B %d", "%d %b", "%b %d"):
-            try:
-                parsed = datetime.strptime(cleaned, fmt).date()
-            except ValueError:
-                continue
-            # A bare day and month has no year. "25 December" asked in
-            # February means this year; asked in December means this year too,
-            # until it has passed, and then it means next year.
-            candidate = parsed.replace(year=today.year)
-            if candidate < today:
-                candidate = candidate.replace(year=today.year + 1)
-            return candidate
-
-        if cleaned.lower() == "tomorrow":
-            return today + timedelta(days=1)
-
-        raise CannotReadDate(f"could not parse {text!r} as a date")
-
-    @staticmethod
-    def _sentence(target: date, difference: int) -> str:
-        # Built by hand rather than with `%-d`, which is a GNU extension: it
-        # raises ValueError on Windows, where half of you are developing, and
-        # the failure would only show up at the last line of a working app.
-        pretty = (
-            f"{target.strftime('%A')} {target.day} "
-            f"{target.strftime('%B')} {target.year}"
+        map_link = (
+            "https://www.openstreetmap.org/?"
+            + urlencode({"mlat": nearest["lat"], "mlon": nearest["lon"]})
+            + "#map=17/{:.5f}/{:.5f}".format(nearest["lat"], nearest["lon"])
         )
-        if difference == 0:
-            return f"That is today, {pretty}."
-        if difference < 0:
-            return f"{pretty} was {abs(difference)} days ago."
-        if difference == 1:
-            return f"{pretty} is tomorrow."
-        return f"There are {difference} days until {pretty}."
+        data = {
+            "location_used": spot["label"],
+            "centre_name": nearest["name"],
+            "centre_borough": nearest["borough"],
+            "distance_km": distance,
+            "map_link": map_link,
+            "other_nearby": others,
+        }
+        if nearest.get("postcode"):
+            data["centre_postcode"] = nearest["postcode"]
+
+        where_text = f" ({nearest['postcode']})" if nearest.get("postcode") else ""
+        narrative = (
+            f"The nearest London recycling centre to {spot['label']} is "
+            f"{nearest['name']}{where_text} in {nearest['borough']}, about "
+            f"{distance} km away. Most London centres are for residents of the "
+            f"boroughs that run them and some need booking, so check the "
+            f"council's website before you go."
+        )
+        return Result(data=data, narrative=narrative)
+
+    def _collection_day(self, where: str) -> Result:
+        spot = self._locate(where, need_borough=True)
+        borough = spot["borough"]
+        council_site = COUNCILS.get(borough, GOV_UK_BIN_DAY)
+
+        data = {
+            "location_used": spot["label"],
+            "borough": borough,
+            "council_website": council_site,
+            "bin_day_finder": GOV_UK_BIN_DAY,
+            "other_possible_boroughs": spot.get("other_boroughs", []),
+        }
+
+        narrative = (
+            f"Recycling at {spot['label']} is collected by {borough} council. "
+            f"Collection days are set street by street, so enter your full "
+            f"postcode at {GOV_UK_BIN_DAY} (or on {council_site}) to see yours."
+        )
+        if spot.get("other_boroughs"):
+            narrative += (
+                f" {spot['label']} also covers parts of "
+                f"{', '.join(spot['other_boroughs'])}, so a full postcode "
+                f"will say for certain."
+            )
+        return Result(data=data, narrative=narrative)
+
+    # ── Finding where somebody means ────────────────────────────────────────
+
+    def _locate(self, where: str, *, need_borough: bool) -> dict:
+        """Turn a postcode or place into {lat, lon, label, borough, ...}."""
+        compact = where.upper().replace(" ", "")
+        if FULL_POSTCODE.match(compact):
+            return self._from_postcode(where, compact)
+        if OUTCODE.match(compact):
+            return self._from_outcode(where, compact)
+        return self._from_place(where, need_borough=need_borough)
+
+    def _from_postcode(self, where: str, compact: str) -> dict:
+        url = f"https://api.postcodes.io/postcodes/{quote(compact, safe='')}"
+        body = self._get_json(url, where, not_found=f"I could not find the postcode {where.upper()}.")
+        result = body.get("result") if isinstance(body, dict) else None
+        if not result or result.get("latitude") is None:
+            raise _not_found(where, f"I could not find the postcode {where.upper()}.")
+        if result.get("region") != "London":
+            raise _outside(where)
+        return {
+            "lat": result["latitude"],
+            "lon": result["longitude"],
+            "label": result.get("postcode") or where.upper(),
+            "borough": _tidy_borough(result.get("admin_district") or ""),
+        }
+
+    def _from_outcode(self, where: str, compact: str) -> dict:
+        url = f"https://api.postcodes.io/outcodes/{quote(compact, safe='')}"
+        body = self._get_json(url, where, not_found=f"I could not find the postcode area {compact}.")
+        result = body.get("result") if isinstance(body, dict) else None
+        if not result or result.get("latitude") is None:
+            raise _not_found(where, f"I could not find the postcode area {compact}.")
+        boroughs = [_tidy_borough(b) for b in (result.get("admin_district") or [])]
+        london = [b for b in boroughs if b in COUNCILS]
+        if not london:
+            raise _outside(where)
+        return {
+            "lat": result["latitude"],
+            "lon": result["longitude"],
+            "label": compact,
+            "borough": london[0],
+            "other_boroughs": london[1:],
+        }
+
+    def _from_place(self, where: str, *, need_borough: bool) -> dict:
+        # Not bounded to London on purpose: bounded, "Brighton" finds Brighton
+        # Road in Croydon. Unbounded (London only preferred), it finds
+        # Brighton, and the answer is honestly "that is not in London".
+        query = urlencode({
+            "q": where,
+            "format": "jsonv2",
+            "countrycodes": "gb",
+            "limit": 5,
+            "addressdetails": 1,
+            "viewbox": LONDON_VIEWBOX,
+        })
+        found = self._get_json(
+            "https://nominatim.openstreetmap.org/search?" + query, where,
+            not_found=f"I could not find {where} in London.",
+        )
+        # Nominatim answers 200 with [] for a place it does not know.
+        if not isinstance(found, list) or not found:
+            raise _not_found(where, f"I could not find {where} in London.")
+
+        in_london = [hit for hit in found if _is_in_london(hit)]
+        if not in_london:
+            raise _outside(where)
+        hit = in_london[0]
+        # Take a London match only if it is the best match overall, or is an
+        # area (a suburb, a borough) rather than a road that shares the name.
+        if hit is not found[0] and hit.get("category") not in ("place", "boundary"):
+            raise _outside(where)
+
+        address = hit.get("address") or {}
+        lat, lon = float(hit["lat"]), float(hit["lon"])
+        label = _tidy_borough(hit.get("name") or where)
+        borough = _tidy_borough(address.get("city_district") or "")
+        if borough not in COUNCILS:
+            borough = _tidy_borough(address.get("city") or "")
+        if borough not in COUNCILS:
+            borough = self._borough_at(lat, lon) if need_borough else borough
+        return {"lat": lat, "lon": lon, "label": label, "borough": borough}
+
+    def _borough_at(self, lat: float, lon: float) -> str:
+        """The borough at a point, from the nearest postcode to it."""
+        url = "https://api.postcodes.io/postcodes?" + urlencode(
+            {"lat": lat, "lon": lon, "limit": 1, "radius": 1000}
+        )
+        body = self._get_json(url, f"{lat},{lon}", not_found="I could not work out which London borough that is.")
+        results = body.get("result") if isinstance(body, dict) else None
+        if not results:
+            raise _not_found(f"{lat},{lon}", "I could not work out which London borough that is.")
+        borough = _tidy_borough(results[0].get("admin_district") or "")
+        if borough not in COUNCILS:
+            raise _outside(f"{lat},{lon}")
+        return borough
+
+    # ── The network, in one place ───────────────────────────────────────────
+
+    def _get_json(self, url: str, where: str, *, not_found: str):
+        try:
+            raw = self._fetch(url)
+        except urllib.error.HTTPError as exc:      # MUST come first: it IS a URLError
+            if exc.code in (400, 404, 422):
+                raise _not_found(where, not_found)
+            if exc.code == 429:
+                raise RateLimitedError(f"rate limited fetching {url}: {exc.code}")
+            raise ServiceUnavailableError(f"{url} returned {exc.code}")
+        except TimeoutError as exc:                # NOT a URLError — its own clause
+            raise ServiceUnavailableError(f"{url} did not answer in time: {exc}")
+        except urllib.error.URLError as exc:       # unreachable, DNS, TLS
+            raise ServiceUnavailableError(f"could not reach {url}: {exc.reason}")
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            raise ServiceUnavailableError(f"{url} sent something that was not JSON: {exc}")
+
+    def _fetch(self, url: str, timeout: float = 6.0) -> bytes:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Straight-line (great-circle) distance in kilometres."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _tidy_borough(name: str) -> str:
+    """'London Borough of Lambeth' / 'Royal Borough of Greenwich' -> 'Lambeth'."""
+    name = name.strip()
+    for prefix in ("London Borough of ", "Royal Borough of ", "City of Westminster"):
+        if name.startswith(prefix):
+            return "Westminster" if prefix == "City of Westminster" else name[len(prefix):]
+    return name
+
+
+#: How Nominatim's `address.city` names places in Greater London. The two
+#: cities inside it are named for themselves, not "Greater London".
+LONDON_CITIES = {"Greater London", "City of Westminster", "City of London"}
+
+
+def _is_in_london(hit: dict) -> bool:
+    address = hit.get("address") or {}
+    return (
+        address.get("city") in LONDON_CITIES
+        or address.get("state_district") == "Greater London"
+    )
+
+
+def _not_found(where: str, message: str) -> PlaceNotFound:
+    error = PlaceNotFound(f"no match for {where!r}")
+    error.user_message = message
+    return error
+
+
+def _outside(where: str) -> NotInLondon:
+    error = NotInLondon(f"{where!r} is outside Greater London")
+    error.user_message = (
+        f"{where} is outside Greater London, and I only cover the London boroughs."
+    )
+    return error

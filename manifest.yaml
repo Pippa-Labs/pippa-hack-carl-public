@@ -39,122 +39,102 @@ persistence: none
 # It does not decide who owns the app, and nothing in this file does. Pippa
 # Labs created this repository for your Pippa account, so every app published
 # from it is yours. docs/REVIEW_AND_SHARING.md is the whole story.
-app_author_name: ""
+app_author_name: "CarlC"
 
 app:
-  # Filled in for you. A new repository replaces this placeholder within a
-  # minute of being created, from the repository's name, and commits it as
-  # github-actions[bot] (.github/workflows/setup.yml). Until then the build
-  # publishes nothing.
-  #
-  # It must be `hack.` + this repository's name with `pippa-hack-` removed and
-  # every hyphen turned into an underscore:
-  #
-  #     Pippa-Labs/pippa-hack-tide-times  ->  hack.tide_times
-  #
-  # Hyphens are not valid in an app id anywhere. `git remote get-url origin`
-  # tells you the repository name.
+  # Must match the repository: Pippa-Labs/pippa-hack-carl-public.
   id: hack.carl_public
-  name: Days Until
-  # The version you are pushing. Pippa keeps a copy of the code of every
-  # version, so pushing a new version never changes an older one: the approved
-  # version keeps working for everyone while you try the next.
-  #
-  # Until you submit a version for review you can push it again under the
-  # same number, as often as you like, and it is replaced. From the moment
-  # you press Submit for review it is frozen, so change this number before
-  # your next push (0.1.0 -> 0.1.1), or the push is refused.
-  #
-  # Three numbers: 0.1.0, not 0.1 and not v0.1.0. Pippa never compares them:
-  # your "latest" version is simply the one you pushed most recently.
-  # docs/REVIEW_AND_SHARING.md says which version you, your testers and
-  # everybody else get.
+  name: London Recycling
+  # Bump this (0.1.0 -> 0.1.1) after you press Submit for review.
   version: 0.1.0
-  # One or two sentences, written for someone deciding whether to install it.
-  # Say what it does and what it sends anywhere. Never use the word "by" — the
-  # badge Pippa shows is parsed from "[via <name> <version> by <author name>]"
-  # (the author name is `app_author_name` above) and splits on the first "by".
+  # Never use the word "b-y" here: the badge is split on it.
   summary: >-
-    Works out how many days there are until a date you name, and says which
-    day of the week it falls on.
+    Finds the nearest household reuse and recycling centre to a London
+    postcode or area, and says which borough council collects your recycling
+    and where to check your collection day. It sends only the postcode or
+    place you mention to postcodes.io and OpenStreetMap.
 
-# Who can install it. `personal` means a person's own Pippa.
 agent_types:
   - personal
 
-# ── Outcomes: the things your app can be asked to do ─────────────────────────
-#
-# An outcome is one job. Pippa picks between your outcomes — and between your
-# app and every other app — by comparing the user's message against `summary`
-# and `example_phrases`. So those two fields are not documentation; they are
-# the behaviour that decides whether your app is used at all.
-#
-# Writing example phrases well:
-#   * Write how a PERSON would ask, not how you would name a function.
-#   * Use carrier words ("how long until"), not one specific subject —
-#     the subject changes every time and only dilutes the match.
-#   * Give each outcome its own words. Two outcomes sharing vocabulary tie,
-#     and a tie is resolved by a model guessing.
-#   * Avoid words another app owns. "today", "tomorrow", "this week" and
-#     "my calendar" belong to Pippa Diary; a phrase using them will lose.
-
 outcomes:
-  - id: days.until
-    summary: Count the days between now and a date, and name the weekday
+  - id: recycling.nearest_centre
+    summary: Find the closest London reuse and recycling centre (the tip) to a postcode or area
     example_phrases:
-      - how many days until
-      - how long until
-      - how many sleeps until
-      - days left until
-      - what day of the week is
-    # What Pippa extracts from the user's message and hands you. A model reads
-    # `description` to do that extraction, so write it as an instruction to
-    # whoever is filling the field in.
+      - where is my nearest recycling centre
+      - closest tip to me in london
+      - nearest household waste recycling centre
+      - where can i take old furniture to the tip
+      - nearest reuse and recycling centre to e8
+      - where can i dump garden waste near clapham
+      - which recycling centre is closest to my postcode
     inputs:
-      # `required: false`, although the app is useless without a date, and
-      # that is deliberate. A missing REQUIRED input is refused inside the
-      # runtime before your code runs, and the user is shown a message that
-      # blames your app for a question they asked perfectly reasonably. An
-      # optional input simply arrives absent, your code notices, and you
-      # raise an error that says something true. Keep `required: true` for
-      # inputs the extractor can always supply.
-      - name: date
+      - name: location
         type: string
         required: false
         description: >-
-          The target date, as the user wrote it — for example "25 December",
-          "2027-01-01" or "next Friday". If the message does not name a date,
-          return an empty string rather than guessing.
-      - name: timezone
-        type: timezone
-        required: false
-        description: The user's time zone, so "today" means their today.
-    # What you promise to return. Returning anything else is refused; omitting
-    # a declared field is refused too. Keep it small and specific.
+          The London postcode (full like "E8 1EA" or district like "SW11"),
+          neighbourhood or borough the user named, exactly as they wrote it.
+          If the message names no place or postcode, return an empty string
+          rather than guessing.
     output:
-      - name: days
-        type: integer
-        description: How many whole days until the date. Negative if it has passed.
-      - name: target_date
+      - name: location_used
         type: string
-        description: The date you actually used, as YYYY-MM-DD.
-      - name: weekday
+        description: The postcode or place the distances were measured from.
+      - name: centre_name
         type: string
-        description: The day of the week the date falls on.
-      - name: already_passed
-        type: boolean
+        description: Name of the nearest reuse and recycling centre.
+      - name: centre_postcode
+        type: string
+        required: false
+        description: The centre's postcode, when known.
+      - name: centre_borough
+        type: string
+        description: The London borough the centre is in.
+      - name: distance_km
+        type: number
+        description: Straight-line distance to the centre in kilometres.
+      - name: map_link
+        type: string
+        description: An OpenStreetMap link to the centre.
+      - name: other_nearby
+        type: array
+        item_type: string
+        description: The next closest centres, with borough and distance.
 
-# ── Things this example does NOT use ─────────────────────────────────────────
-#
-# `connectors:` and `secrets:` declare that your app needs somebody's
-# credentials — a Google account, for instance. Hackathon apps may not use
-# them: registration refuses any app that asks, because granting a stranger's
-# app a real user's credential is not something a workshop can consent to on
-# a user's behalf.
-#
-# Your app CAN still call the public internet (see docs/HOW_PIPPA_APPS_WORK.md).
-# Use an API that needs no key, or a demo key the provider publishes for
-# everyone, such as NASA's DEMO_KEY. Never a key tied to your own account, not
-# even a free one: this repository is public, and a key you delete stays in
-# the git history. If a key is ever pushed, revoke it with the provider first,
-# then tell an organiser. docs/API_APPS.md has the details.
+  - id: recycling.collection_day
+    summary: Say which London borough collects recycling at a postcode and where to check the bin day
+    example_phrases:
+      - when is my recycling collected
+      - what day are my bins collected
+      - when is bin day for my postcode
+      - which council collects my recycling
+      - when do the recycling bins go out in hackney
+      - recycling collection day for sw11
+      - what day is rubbish collection on my street
+    inputs:
+      - name: location
+        type: string
+        required: false
+        description: >-
+          The London postcode (full like "E8 1EA" or district like "SW11"),
+          neighbourhood or borough the user named, exactly as they wrote it.
+          If the message names no place or postcode, return an empty string
+          rather than guessing.
+    output:
+      - name: location_used
+        type: string
+        description: The postcode or place that was looked up.
+      - name: borough
+        type: string
+        description: The London borough council that collects recycling there.
+      - name: council_website
+        type: string
+        description: That council's recycling or main web page.
+      - name: bin_day_finder
+        type: string
+        description: GOV.UK's official page for finding the exact collection day from a postcode.
+      - name: other_possible_boroughs
+        type: array
+        item_type: string
+        description: Other boroughs a postcode district also covers; empty when the answer is certain.
